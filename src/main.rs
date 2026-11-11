@@ -32,29 +32,48 @@ fn run() -> Result<()> {
         return Ok(());
     };
     let rest: Vec<String> = args.collect();
-    match command.as_str() {
+    match command.to_ascii_lowercase().as_str() {
+        "quickdraw" | "quick-draw" => achievement_quickdraw(&rest),
+        "pullshark" | "pull-shark" => achievement_merge(&rest, false),
+        "yolo" => achievement_merge(&rest, true),
         "status" => status(&rest),
-        "quickdraw" => quickdraw(&rest),
         "pr" => create_pr(&rest),
         "merge" => merge_pr(&rest),
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
         }
-        other => Err(CliError(format!("unknown command `{other}`\n\n{HELP}"))),
+        other => Err(CliError(format!(
+            "unknown achievement or command `{other}`\n\n{HELP}"
+        ))),
     }
 }
 
-const HELP: &str = "Usage:
-  gh-achievements status
-  gh-achievements quickdraw --repo OWNER/REPO --title TITLE --body BODY [--allow-private]
-  gh-achievements pr --repo OWNER/REPO --base BRANCH --head BRANCH --title TITLE --body BODY [--allow-private]
-  gh-achievements merge --repo OWNER/REPO --number PR_NUMBER [--allow-private]
+const HELP: &str = "gh-achiv — GitHub achievement helper
 
-All remote changes require confirmation. Quickdraw closes the issue only after a
-second confirmation. PR creation requires a real local diff between base and head.
-Repositories must be public unless --allow-private is supplied. Safety limits:
-at least two seconds between mutating requests; requests are serialized.";
+Usage:
+  gh-achiv --help
+  gh-achiv status
+  gh-achiv quickdraw -m \"Issue title and description\" [--repo OWNER/REPO]
+  gh-achiv pullshark [-m \"PR description\"] [--repo OWNER/REPO] [--number N]
+  gh-achiv yolo [-m \"PR description\"] [--repo OWNER/REPO] [--number N]
+  gh-achiv pr --repo OWNER/REPO --base BRANCH --head BRANCH --title TITLE --body TEXT
+  gh-achiv merge --repo OWNER/REPO --number N
+
+Achievements:
+  Quickdraw   Creates an issue from -m, then closes it after one confirmation.
+  Pull Shark  Merges your open PR; the first tier requires two merged PRs.
+  YOLO        Same flow, and checks that the PR has no reviews.
+  Pair Extraordinaire  Requires meaningful co-authored commits with another person.
+  Galaxy Brain         Requires accepted answers/discussion participation.
+  Starstruck           Depends on other users starring your repository.
+  Public Sponsor       Requires sponsorship of an eligible open-source maintainer.
+  Arctic Code Vault Contributor, Mars 2020 Contributor  Historical; no longer earnable.
+
+For Pull Shark/YOLO, run inside a GitHub checkout with the current branch pushed.
+The repository is detected automatically; --repo overrides detection. -m is the
+issue/PR text. Each achievement workflow asks once; answer y to proceed. Actions
+are serialized, rate limits are respected, and GitHub decides badge eligibility.";
 
 fn print_help() {
     println!("{HELP}");
@@ -69,6 +88,7 @@ struct Options {
     head: Option<String>,
     number: Option<String>,
     allow_private: bool,
+    message: Option<String>,
 }
 
 impl Options {
@@ -82,7 +102,7 @@ impl Options {
                 i += 1;
                 continue;
             }
-            if !key.starts_with("--") {
+            if !key.starts_with('-') {
                 return Err(CliError(format!("unexpected argument `{key}`")));
             }
             let value = args
@@ -90,9 +110,13 @@ impl Options {
                 .ok_or_else(|| CliError(format!("missing value for {key}")))?
                 .clone();
             match key {
-                "--repo" => options.repo = Some(value),
-                "--title" => options.title = Some(value),
-                "--body" => options.body = Some(value),
+                "--repo" | "-r" => options.repo = Some(value),
+                "--title" | "-t" => options.title = Some(value),
+                "--body" => options.body = Some(value.clone()),
+                "--message" | "-m" => {
+                    options.message = Some(value.clone());
+                    options.body = Some(value);
+                }
                 "--base" => options.base = Some(value),
                 "--head" => options.head = Some(value),
                 "--number" => options.number = Some(value),
@@ -128,45 +152,255 @@ fn status(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn quickdraw(args: &[String]) -> Result<()> {
+fn achievement_quickdraw(args: &[String]) -> Result<()> {
     let options = Options::parse(args)?;
-    let repo = Options::require(&options.repo, "--repo")?;
+    let repo = resolve_repo(options.repo.as_deref())?;
     validate_repo(&repo)?;
     ensure_repo_allowed(&repo, options.allow_private)?;
-    let title = Options::require(&options.title, "--title")?;
-    let body = Options::require(&options.body, "--body")?;
-    println!("Will create an issue in {repo}:\n  Title: {title}\n  Body: {body}");
-    if !confirm("Create this issue?")? {
+    let body = options.message.or(options.body).ok_or_else(|| {
+        CliError("Quickdraw needs text: gh-achiv quickdraw -m \"issue details\"".into())
+    })?;
+    let title = options.title.unwrap_or_else(|| {
+        let first = body
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("Quickdraw issue")
+            .trim();
+        first.chars().take(80).collect()
+    });
+    if body.trim().is_empty() || title.trim().is_empty() {
+        return Err(CliError(
+            "Quickdraw requires non-empty issue text and title".into(),
+        ));
+    }
+    println!("Quickdraw will create and close this issue in {repo}:\n  {title}\n  {body}");
+    if !confirm("Proceed? Issue creation and closing are both part of this action.")? {
         println!("Cancelled; no remote changes made.");
         return Ok(());
     }
+    let request_started = Instant::now();
     let url = gh_mutation(&[
         "issue", "create", "--repo", &repo, "--title", &title, "--body", &body,
     ])?;
-    let created_at = Instant::now();
     println!("Created: {url}");
-    if confirm("Close this issue now?")? {
-        let elapsed = created_at.elapsed();
-        if elapsed >= QUICKDRAW_CUTOFF {
-            println!(
-                "Left open: more than four minutes have passed, so closing now would be too close to the five-minute qualification window."
-            );
-            return Ok(());
-        }
-        let remaining_pause = QUICKDRAW_PAUSE.saturating_sub(elapsed);
-        if !remaining_pause.is_zero() {
-            println!(
-                "Waiting {} seconds before closing to avoid back-to-back writes...",
-                remaining_pause.as_secs()
-            );
-            thread::sleep(remaining_pause);
-        }
-        gh_mutation(&["issue", "close", &url])?;
-        println!("Closed. GitHub decides whether this qualifies for Quickdraw.");
-    } else {
-        println!("Issue left open: {url}");
+    if request_started.elapsed() >= QUICKDRAW_CUTOFF {
+        println!("Left open because the Quickdraw time window is nearly over.");
+        return Ok(());
     }
+    let pause = QUICKDRAW_PAUSE.saturating_sub(request_started.elapsed());
+    if !pause.is_zero() {
+        println!("Waiting {} seconds before closing…", pause.as_secs());
+        thread::sleep(pause);
+    }
+    gh_mutation(&["issue", "close", &url])?;
+    println!("Issue closed. GitHub decides whether this qualifies for Quickdraw.");
     Ok(())
+}
+
+fn achievement_merge(args: &[String], yolo: bool) -> Result<()> {
+    let options = Options::parse(args)?;
+    let repo = resolve_repo(options.repo.as_deref())?;
+    validate_repo(&repo)?;
+    ensure_repo_allowed(&repo, options.allow_private)?;
+    let login = gh_text(&["api", "user", "--jq", ".login"])?;
+    let mut number = options.number;
+    let mut create_from_branch = false;
+    let mut branch = String::new();
+    let mut base = String::new();
+
+    if number.is_none() {
+        branch = git_text(&["branch", "--show-current"])?;
+        if branch.is_empty() {
+            return Err(CliError(
+                "Run this from a named branch in your GitHub checkout.".into(),
+            ));
+        }
+        let candidates = gh_text(&[
+            "pr",
+            "list",
+            "--repo",
+            &repo,
+            "--head",
+            &branch,
+            "--state",
+            "open",
+            "--json",
+            "number",
+            "--jq",
+            "[.[].number] | @tsv",
+        ])?;
+        let mut candidate_numbers = candidates.split_whitespace();
+        number = match (candidate_numbers.next(), candidate_numbers.next()) {
+            (None, _) => None,
+            (Some(_), Some(_)) => {
+                return Err(CliError(
+                    "More than one open PR uses this branch; select one with --number.".into(),
+                ));
+            }
+            (Some(number), None) => Some(number.to_owned()),
+        };
+        if number.is_none() {
+            let text = options
+                .message
+                .as_deref()
+                .or(options.body.as_deref())
+                .ok_or_else(|| {
+                    CliError(
+                        "No open PR on this branch. Supply its text with -m to create one.".into(),
+                    )
+                })?;
+            base = gh_text(&[
+                "repo",
+                "view",
+                &repo,
+                "--json",
+                "defaultBranchRef",
+                "--jq",
+                ".defaultBranchRef.name",
+            ])?;
+            let diff = git_diff(&base, "HEAD")?;
+            if diff.trim().is_empty() {
+                return Err(CliError(format!(
+                    "No changes between {base} and HEAD; cannot create a PR."
+                )));
+            }
+            create_from_branch = true;
+            let kind = if yolo { "YOLO" } else { "Pull Shark" };
+            println!(
+                "{kind} will create a PR in {repo}: {branch} → {base}\nText: {text}\n\nDiff:\n{diff}"
+            );
+        }
+    }
+
+    let message = options.message.or(options.body).unwrap_or_default();
+    let mut title = options.title.unwrap_or_else(|| {
+        branch
+            .rsplit('/')
+            .next()
+            .unwrap_or(&branch)
+            .replace(['-', '_'], " ")
+    });
+    if create_from_branch && title.trim().is_empty() {
+        title = "Changes from current branch".into();
+    }
+    let mut number = number.unwrap_or_default();
+    if !create_from_branch {
+        if !number.chars().all(|ch| ch.is_ascii_digit()) || number == "0" {
+            return Err(CliError(
+                "--number must be a positive pull request number".into(),
+            ));
+        }
+        let author = gh_text(&[
+            "pr",
+            "view",
+            &number,
+            "--repo",
+            &repo,
+            "--json",
+            "author",
+            "--jq",
+            ".author.login",
+        ])?;
+        if author != login {
+            return Err(CliError(format!(
+                "PR #{number} is authored by {author}, not {login}"
+            )));
+        }
+        let state = gh_text(&[
+            "pr", "view", &number, "--repo", &repo, "--json", "state", "--jq", ".state",
+        ])?;
+        if state != "OPEN" {
+            return Err(CliError(format!(
+                "PR #{number} is {state}; only open PRs can be merged"
+            )));
+        }
+        title = gh_text(&[
+            "pr", "view", &number, "--repo", &repo, "--json", "title", "--jq", ".title",
+        ])?;
+    }
+    if yolo && !create_from_branch {
+        let reviews = gh_text(&[
+            "pr",
+            "view",
+            &number,
+            "--repo",
+            &repo,
+            "--json",
+            "reviews",
+            "--jq",
+            ".reviews | length",
+        ])?;
+        if reviews != "0" {
+            return Err(CliError(format!(
+                "PR #{number} has {reviews} review(s); YOLO requires no reviews"
+            )));
+        }
+    }
+    let kind = if yolo { "YOLO" } else { "Pull Shark" };
+    if !create_from_branch {
+        println!("{kind} will merge your PR #{number} in {repo}: {title}");
+    }
+    if !confirm("Proceed? This may create and merge a pull request.")? {
+        println!("Cancelled; no remote changes made.");
+        return Ok(());
+    }
+    if create_from_branch {
+        let text = if message.trim().is_empty() {
+            &title
+        } else {
+            &message
+        };
+        let url = gh_mutation(&[
+            "pr", "create", "--repo", &repo, "--base", &base, "--head", &branch, "--title", &title,
+            "--body", text,
+        ])?;
+        println!("Created: {url}");
+        number = url.rsplit('/').next().unwrap_or("").to_owned();
+        if number.is_empty() {
+            return Err(CliError(format!(
+                "Created PR but couldn't read its number from: {url}"
+            )));
+        }
+    }
+    gh_mutation(&["pr", "merge", &number, "--repo", &repo, "--merge"])?;
+    println!("Merged. GitHub decides whether this qualifies for {kind}.");
+    Ok(())
+}
+
+fn resolve_repo(repo: Option<&str>) -> Result<String> {
+    match repo {
+        Some(repo) => Ok(repo.to_owned()),
+        None => gh_text(&[
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
+        ])
+        .map_err(|_| {
+            CliError(
+                "Cannot detect repository. Run inside a GitHub checkout or pass --repo OWNER/REPO."
+                    .into(),
+            )
+        }),
+    }
+}
+
+fn git_text(args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|error| CliError(format!("could not run git: {error}")))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        Err(CliError(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
 }
 
 fn create_pr(args: &[String]) -> Result<()> {
@@ -256,7 +490,7 @@ fn merge_pr(args: &[String]) -> Result<()> {
         "pr", "view", &number, "--repo", &repo, "--json", "title", "--jq", ".title",
     ])?;
     println!("Will merge your own PR #{number} in {repo} without a review: {title}");
-    if !confirm_exact("Type MERGE to continue:", "MERGE")? {
+    if !confirm("Merge this pull request? This cannot be undone. Continue?")? {
         println!("Cancelled; no remote changes made.");
         return Ok(());
     }
@@ -325,18 +559,6 @@ fn confirm(prompt: &str) -> Result<bool> {
         answer.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
-}
-
-fn confirm_exact(prompt: &str, expected: &str) -> Result<bool> {
-    print!("{prompt} ");
-    io::stdout()
-        .flush()
-        .map_err(|error| CliError(error.to_string()))?;
-    let mut answer = String::new();
-    io::stdin()
-        .read_line(&mut answer)
-        .map_err(|error| CliError(error.to_string()))?;
-    Ok(answer.trim() == expected)
 }
 
 fn gh_text(args: &[&str]) -> Result<String> {
