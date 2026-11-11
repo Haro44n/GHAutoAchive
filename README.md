@@ -1,49 +1,53 @@
-# gh-achievements
+# gh-achiv
 
-A confirmation-first Rust CLI for a few GitHub profile achievements. It uses the
-user's existing `gh` authentication and never stores a GitHub token.
+Short Rust CLI for GitHub profile achievements. It uses the existing GitHub CLI
+authentication (`gh auth login`) and does not store a GitHub token.
 
-## Requirements
+## Quick start
 
-- Rust toolchain (edition 2024)
-- GitHub CLI (`gh`) installed and authenticated with `gh auth login`
-- For `pr`, a local checkout with both base and head refs available
-
-## Commands
+Run commands in a checkout of the repository. The repository is detected from
+the current directory; pass `--repo OWNER/REPO` to override it.
 
 ```text
-gh-achievements status
-gh-achievements quickdraw --repo OWNER/REPO --title "A useful issue" --body "Describe a real task"
-gh-achievements pr --repo OWNER/REPO --base main --head feature/real-change --title "Explain the change" --body "Why this change helps"
-gh-achievements merge --repo OWNER/REPO --number 123
+gh-achiv --help
+gh-achiv status
+gh-achiv quickdraw -m "Describe a real issue to create and close"
+gh-achiv pullshark -m "Describe the change for the PR"
+gh-achiv yolo -m "Describe the change for the PR"
 ```
 
-Repositories must be public by default. Add `--allow-private` to explicitly
-permit a private repository. Each remote write asks for confirmation. Creating
-an issue and closing it are separate confirmations; the issue is left open if
-the second confirmation is declined. PR creation prints the local diff first
-and refuses an empty diff. Merge only proceeds for the authenticated user's
-open PR with no submitted reviews and requires typing `MERGE`.
+Each workflow prints what it will do and asks once for `y`. Quickdraw creates an
+issue using the first line as its title, waits between writes, and closes it.
+Pull Shark and YOLO use an open PR on the current branch, or create one when the
+branch has a real diff from the default branch. The branch must already be
+pushed. YOLO requires a PR with no reviews. `-m` is needed when the CLI must
+create a PR; add `--number N` to select an open PR explicitly. Add
+`--repo OWNER/REPO` outside a checkout. Pull Shark's first tier requires two
+merged PRs, so one merge does not guarantee the badge.
 
-## Safety limits
+## Available achievements
 
-- Mutating requests run serially, with at least two seconds between requests.
-  The last request time is stored under `$XDG_STATE_HOME/gh-achievements` or
-  `$HOME/.local/state/gh-achievements`; there is no daily action quota.
-- A lock prevents concurrent CLI instances. Quickdraw observes the same
-  two-second gap between issue creation and closing, and leaves the issue open
-  if the five-minute qualification window is nearly over.
-- On a rate-limit or abuse response, the command stops without retrying. Wait
-  at least the time requested by GitHub before running another action. The
-  two-second gap is a pacing guard, not a guarantee against account-specific
-  or endpoint-specific limits.
+- **Quickdraw**: CLI can create and promptly close an issue.
+- **Pull Shark**: CLI can merge your open pull request.
+- **YOLO**: CLI can merge your open pull request after checking it has no reviews.
+- **Pair Extraordinaire**: requires meaningful co-authored work with another user.
+- **Galaxy Brain**: depends on accepted answers and discussion participation.
+- **Starstruck**: depends on other people starring your repository.
+- **Public Sponsor**: requires a genuine public sponsorship.
+- **Arctic Code Vault Contributor** and **Mars 2020 Contributor**: historical
+  achievements from past GitHub programs; they are no longer earnable.
 
-GitHub determines which actions qualify and when achievements appear. The
-achievement tab is not exposed through the GitHub CLI/API, so `status` reports
-the authenticated account and links to the profile rather than claiming a
-verified badge count. Some achievement criteria are inferred from GitHub's
-achievement hints and may change.
+The CLI does not simulate the achievements that require another person's
+participation or recognition. GitHub determines eligibility and badge timing;
+the achievement tab is not exposed through the GitHub CLI/API.
 
-## Install from source
+## Safety
 
-Install with cargo install --path .
+- Every workflow asks once before remote changes; `y` proceeds and Enter cancels.
+- Writes are serialized with at least a two-second gap; Quickdraw has a larger
+  safety window and stops closing if that window is almost over.
+- Rate-limit and abuse responses stop the command without automatic retries.
+- Public repositories are allowed by default. Pass `--allow-private` to opt in
+  to a private repository.
+
+Requires Rust 2024 and the GitHub CLI (`gh`) authenticated on the account to use.
