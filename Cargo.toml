@@ -6,5 +6,5 @@ description = "A confirmation-first helper for GitHub achievements"
 license = "MIT"
 
 [[bin]]
-name = "gh-achievements"
+name = "gh-achiv"
 path = "src/main.rs"
