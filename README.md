@@ -43,3 +43,7 @@ achievement tab is not exposed through the GitHub CLI/API, so `status` reports
 the authenticated account and links to the profile rather than claiming a
 verified badge count. Some achievement criteria are inferred from GitHub's
 achievement hints and may change.
+
+## Install from source
+
+Install with cargo install --path .
