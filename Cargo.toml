@@ -1,0 +1,10 @@
+[package]
+name = "gh-achievements"
+version = "0.1.0"
+edition = "2024"
+description = "A confirmation-first helper for GitHub achievements"
+license = "MIT"
+
+[[bin]]
+name = "gh-achievements"
+path = "src/main.rs"
